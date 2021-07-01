@@ -1,0 +1,11 @@
+---------
+to build the libdrk.so (to run in the drone), type:
+
+$ make clean ; make
+
+then, copy it to drone's folder: /usr/lib/
+
+----------
+to build the libdrk_sim.so (for simulation), type:
+
+$ make clean ; make SIMULATOR=yes

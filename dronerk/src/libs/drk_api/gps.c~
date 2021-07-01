@@ -1,0 +1,230 @@
+/**
+ * gps.c
+ * Nat Storer - 6/2/2011
+ * Reads gps values from our external sensor board 
+ */
+
+#include "drk/gps.h"
+
+#include <pthread.h>
+#include <stdio.h>
+#include <math.h>
+#include <string.h>
+#include <unistd.h>
+
+#include "drk/expansion_sensor_api.h"
+
+/******************
+ * Externs
+ *****************/
+extern struct global_serial* serial_buf;
+double base_lat;
+double base_lon;
+
+/******************
+ * Globals
+ *****************/
+pthread_mutex_t gps_mutex; //to protect gps part of serial_buf, there is a extern of this in ESSH
+
+/* Index Checkers */
+int last_GPS;
+
+/******************************
+ * Function definitions
+ *****************************/
+
+/* Wait for valid GPS data for 30 seconds */
+int drk_wait_for_gps()
+{
+  return _wait_for_gps(30);
+}
+
+int _wait_for_gps(int time_seconds)
+{
+  int quality = drk_gps_myfix();
+  int count = 0;
+  if (quality == 0)
+    printf("drk@Waiting for a GPS fix for %ds\n",time_seconds);
+  while (quality == 0 && count < time_seconds)
+  {
+    sleep(1);
+    count++;
+    quality = drk_gps_myfix();
+  }
+  if (quality > 0)
+    printf("gps@GPS fix acquired.\n");
+  return quality;
+}
+
+/*******************************************************************************
+              GPS ACCESS AND PROCESSING
+*******************************************************************************/
+void _drk_set_basestation()
+{
+	gps_t tmp_gps = drk_gps_data();
+	base_lat = tmp_gps.ssp_lat ;
+	base_lon = tmp_gps.ssp_lat ;	
+  printf("gps@basestation set to %lf %lf\n", base_lat, base_lon );
+}
+
+/* Return a thread-safe copy of the GPS for your own functions */
+gps_t drk_gps_data()
+{
+  gps_t temp_gps;
+	
+  pthread_mutex_lock(&gps_mutex); //here we read with a gps_mutex ! ESSH uses a semaphore!
+  memcpy(&temp_gps, &(serial_buf->gps_buf), sizeof(gps_t));
+  pthread_mutex_unlock(&gps_mutex);
+	// eventually, there is no new sample. so reading the serialbuf will return the same. use index to confrim
+
+
+  return temp_gps;
+}
+
+/* Return whether or not the current drone's GPS has a valid fix */
+int drk_gps_myfix ()
+{
+  gps_t temp_gps = drk_gps_data();
+  return _drk_gps_fix(temp_gps);
+}
+
+/* Returns the number of satellites used for locking */
+int drk_gps_get_numsats()
+{
+  gps_t temp_gps = drk_gps_data();
+  if(temp_gps.index==0)
+    return temp_gps.index;
+  else 
+    return temp_gps.num_sats;
+}
+
+
+/* Check if GPS data is valid */
+int _drk_gps_fix (gps_t target)
+{
+  if (target.index == 0) return 0;
+  return target.quality;  
+}
+
+/* Calculate the distance between two coordinate pairs */
+double drk_gps_coordinates_distance (double lat1, double long1, double lat2,
+  double long2)
+{
+  const double earth_radius = 6371000; //TODO: why is this a variable? LP
+  
+  // Get the difference between our two points then convert the difference into
+  // radians
+
+  double lat_diff = drk_degrees_to_radians(lat2 - lat1);  
+  double long_diff = drk_degrees_to_radians(long2 - long1); 
+
+  lat1 =  drk_degrees_to_radians(lat1);
+  lat2 =  drk_degrees_to_radians(lat2);
+  
+  double a =  pow(sin(lat_diff / 2), 2) +
+    cos(lat1) * cos(lat2) * pow(sin(long_diff/2), 2); 
+
+  double c = 2 * atan2( sqrt(a), sqrt(1 - a));
+
+  double dist = earth_radius * c;
+
+  return dist;
+}
+
+/* Calculate the distance between current position and a coordinate pair */
+// returns -1 if there is not a gps fix
+double drk_gps_coordinates_mydistance (double target_lat, double target_long)
+{
+  /* Check for fix validity, then pass off to calculation function */
+  gps_t temp_gps = drk_gps_data();
+  //if (!_drk_gps_fix(temp_gps)) return -1;
+	if (temp_gps.num_sats <= 3)
+		return -1;
+  
+  double my_lat = temp_gps.latitude;
+  double my_long = temp_gps.longitude;
+
+  double dist = drk_gps_coordinates_distance(my_lat, my_long, target_lat, target_long);
+
+  return dist;
+}
+
+/* Calculate heading between two pairs of lat-long */
+double drk_gps_target_heading (double my_lat, double my_long, double target_lat,
+  double target_long)
+{
+  my_lat = drk_degrees_to_radians(my_lat);
+  target_lat = drk_degrees_to_radians(target_lat);
+  double longdiff = drk_degrees_to_radians(target_long - my_long);
+  
+  double y = sin(longdiff) * cos(target_lat);
+  double x = (cos(my_lat) * sin(target_lat)) -
+    (sin(my_lat) * cos(target_lat) * cos(longdiff));
+  
+  double bearing = atan2(y,x);
+  return (fmod(drk_radians_to_degrees(bearing) + 360.0, 360.0));
+}
+
+/* Calculate heading between current location & target pair of lat-long */
+int drk_cartesian_myheading (double target_lat, double target_long)
+{
+  gps_t temp_gps = drk_gps_data();
+  double my_lat = temp_gps.latitude;
+  double my_long = temp_gps.longitude;
+  return drk_cartesian_heading (my_lat, my_long, target_lat, target_long);
+}
+
+int drk_cartesian_heading (double my_lat, double my_long, double target_lat,
+  double target_long)
+{
+  double latdiff = target_lat - my_lat;
+  double longdiff = target_long - my_long;
+  return ((int)(drk_radians_to_degrees(atan2(longdiff, latdiff)) + 360))%360;
+}
+
+double drk_gps_target_myheading (double target_lat, double target_long)
+{
+  gps_t temp_gps = drk_gps_data();
+  if (!_drk_gps_fix(temp_gps))
+    return -1;
+  double my_lat = temp_gps.latitude;
+  double my_long = temp_gps.longitude;
+  return drk_gps_target_heading(my_lat, my_long, target_lat, target_long);
+}
+
+/* NMEA format angle(latitude\longitude) into decimal*/
+double drk_nmea_to_decimal(double coordinate)
+{
+  double end = fmod(coordinate, (double)100.0);
+  return (double)(((coordinate - end) / 100.0) + (end / 60.0));
+}
+
+/* Convert angle degrees to radians */
+double drk_degrees_to_radians(double degrees)
+{
+  return degrees * (M_PI/180.0);
+}
+
+/*  Convert angle radians to degrees */
+double drk_radians_to_degrees(double radians)
+{
+  return radians * (180.0/M_PI);
+}
+
+/*******************************************************************************
+              DEBUGGING METHODS
+*******************************************************************************/
+
+/* Print the most recent GPS data */
+void drk_gps_print()
+{
+  /* Copy the data to make it thread-safe */
+  gps_t gps_copy = drk_gps_data();
+  
+  /* Print the data */
+  //printf("****GPS DATA****\n");
+  printf("Lat [%f]\tLon [%f]\tAlt [%f]\n",
+    gps_copy.latitude, gps_copy.longitude, gps_copy.altitude);
+  //printf("UTC [%f]\tQuality [%d]\tnum_sats [%d]\tidx [%d]\n\n",
+  //  gps_copy.UTC, gps_copy.quality, gps_copy.num_sats, gps_copy.index);
+}

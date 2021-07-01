@@ -1,0 +1,464 @@
+/**
+ * autonomous.c
+ * aka AC (autonomous control)
+ */
+
+#include "drk/autonomous.h"
+
+#include <pthread.h>
+#include <stdio.h>
+#include <math.h>
+#include <unistd.h>
+
+
+#include "drk/flight_control_api.h"
+#include "drk/gps.h"
+#include "drk/internal_sensor_raw.h"
+#include "drk/drk.h"
+
+//#define MIN_NUM_SATS_TO_FLY 7
+#define DEGREE2RADIAN 0.0174532925
+#define MIN_ALTITUDE_SAFETY 3
+#define PAUSED 1
+#define FLYING 0
+
+#define T_REACHED 1
+#define T_NOT_REACHED 0
+
+/* FUNCTION MACROS */
+#define MIN(A,B) ((A) < (B) ? (A) : (B))
+#define MAX(A,B) ((A) > (B) ? (A) : (B))
+
+/*******************************************************************************
+ * Globals
+ ******************************************************************************/
+
+// Variables to control autonomous state, and mutex:
+uint8_t autonomous_state;
+pthread_mutex_t mutex_autonomous_state = PTHREAD_MUTEX_INITIALIZER;
+uint8_t target_reached = T_NOT_REACHED; //used in drk_autonomous_target_reached() 
+// Variables to control PID, and mutex:
+pthread_mutex_t mutex_pid_params = PTHREAD_MUTEX_INITIALIZER; //mutex to config PID
+double kp_h = 0.0250 , ki_h = 0.0000 , kd_h = 0.1 , kp_v = 0.6;
+
+// Variables to control current waypoint, and mutex:
+pthread_mutex_t waypoint_mutex = PTHREAD_MUTEX_INITIALIZER; //mutex to set waypoints
+uint8_t new_waypoint = 0; //used to flag the entry of a new waypoint
+gps_waypoint_t waypoint; //the current waypoint the controller uses
+
+/*******************************************************************************
+                            AUTONOMOUS FLIGHT FUNCTIONS
+*******************************************************************************/
+
+
+
+
+void _drk_autonomous_set_PID( double _kp_h , double _ki_h , double _kd_h , double _kp_v )
+{
+  pthread_mutex_lock( &mutex_pid_params );
+
+  // [h]orizontal control:
+  kp_h = _kp_h;
+  ki_h = _ki_h;  
+  kd_h = _kd_h;
+
+  // [v]ertical control:
+  kp_v = _kp_v;  
+
+  //print changes:
+  printf("AC@ PID set to kP_h=%.5f kI_h=%0.5f kD_h=%.5f kp_v=%.5f\n",
+		kp_h, ki_h , kd_h, kp_v );
+
+  pthread_mutex_unlock(&mutex_pid_params);
+}
+
+void drk_autonomous_pause()  
+{
+  printf("AC@ State: **PAUSED**\n");
+  //printf("pause:%d\n",autonomous_state);
+  pthread_mutex_lock( &mutex_autonomous_state );
+  autonomous_state = PAUSED;
+  pthread_mutex_unlock( &mutex_autonomous_state );
+  drk_hover( 500 );
+}
+
+
+void drk_autonomous_resume()
+{
+  printf("AC@ State: **RESUMED**\n");
+  //printf("pause:%d\n",autonomous_state);
+  //printf("trying to modify threadpause\n");
+  pthread_mutex_lock(&mutex_autonomous_state);
+  autonomous_state = FLYING;
+  pthread_mutex_unlock(&mutex_autonomous_state);
+}
+
+// Returns the state of autonomous flight:
+// 1 if paused
+// 0 if flying to cur target
+uint8_t drk_autonomous_get_state(){
+  pthread_mutex_lock(&mutex_autonomous_state);
+  uint8_t temp=autonomous_state;
+  pthread_mutex_unlock(&mutex_autonomous_state);
+  return temp; 
+}
+
+pthread_t tid;
+pthread_attr_t attr;
+
+// initiates autonmous controller
+// returns -1 if thread can't be spawned
+int8_t _drk_autonomous_init()
+{
+  
+  pthread_attr_init( &attr ) ;
+  size_t desiredstacksize = 4000000;
+  pthread_attr_setstacksize(&attr,desiredstacksize);
+
+
+
+  pthread_mutex_lock(&mutex_autonomous_state);
+  autonomous_state = PAUSED;
+  pthread_mutex_unlock(&mutex_autonomous_state);
+  printf("AC@ state: PAUSED\n");
+
+  // create movement thread
+  if (pthread_create(&tid, &attr, _drk_autonomous_move_thread, NULL) != 0) 
+  {
+    printf("AC@ Error spawning 'drk_autonomous_move_thread' thread.\n");
+    return -1;
+  }
+  else
+  {
+    printf("AC@ Thread created with success\n");
+    return 0;
+  }
+}
+
+/* CONTINUOUS THREAD that Goes to coordinates using GPS waypoints and spin from =GYRO= */
+// Reaches the point and stays there
+// GYRO is used, compass used to calibrate. 
+void * drk_autonomous_move_thread()
+{
+
+  size_t stacksize;
+
+  pthread_attr_getstacksize(&attr,&stacksize);
+  #ifdef __arm__
+  printf("AC@ stacksize %u!\n",stacksize);
+  #else
+  printf("AC@ stacksize %u!\n",(unsigned int)stacksize);
+  #endif
+
+  // Used for spin control loop (in degrees) 
+	// TODO: change the whole thing to radians cause it is the SI unit
+  double current_spin; // Direction drone is moving relative to north
+  double target_spin;  // Direction of target as seen by drone
+  double heading_error;   // Target spin - drone spin
+  
+  // used for altitude control loop (SI units)
+  double ultra_altitude, pressure_altitude = 0;
+  double vertical_error = 0; 
+
+  // used for linear movement control - PID loop (SI units)
+  double distance = 0; // for 'P' in PID
+  double sum_distance = 0; // for 'I' in PID
+  double last_distance = 100000;   //to compute D error of distance
+  double linear_speed = 0;     // D error parameter of distance controller
+
+  // outputs of the control loops
+  double output_horizontal = 0;    // speed of the drone to inject in the controller
+  double output_horizontal_tangential_component = 0;// tangential component - pitch
+  double output_horizontal_normal_component = 0;    // normal component - roll
+  double output_vertical = 0;  // vertical component - gaz
+  double refresh_rate = 2;   //how fast the controller runs the cycle in Hz
+  
+  // thread local copy of gps_target
+  double target_lat ;
+  double target_lon ;
+  double target_altitude;
+  double max_output_horizontal;
+  double distance_tolerance; 
+
+  uint8_t autonomous_state_tmp=PAUSED;
+
+
+// LOG starts
+
+
+	double vtg_heading;
+	double latitude, longitude; 
+	double vtg_speed;
+	gps_t temp_gps; 
+	uint16_t gps_last_sample_idx = 0 ; 
+
+	FILE * sensor_log;
+	//FILE * myid_file;
+	char logfilename[100]; 
+	//myid_file = fopen("./myid.txt","r");
+	//char buf1[10];
+	//fgets(buf1, sizeof(buf1), myid_file); //read a line
+	
+	uint8_t my_id = drk_ip_num() ; 
+	//sscanf(buf1, "id %hhu", &myid); // scan for my id
+	//printf("ac log@ I am node #%d\n",myid);
+	
+	time_t rawtime;
+  time (&rawtime);
+ 	struct tm datee = *localtime(&rawtime);
+	
+
+	sprintf(logfilename, "gpslog_#%d_%02d-%02d-%02d_%02dh%02dm%02ds_RX.txt", my_id,
+		datee.tm_year+1900,datee.tm_mon+1, datee.tm_mday, datee.tm_hour, datee.tm_min,datee.tm_sec ); 
+
+
+	printf("ac log@ logging into %s\n", logfilename);	
+	
+	sensor_log = fopen(logfilename,"w");
+
+	printf("ac log@ Now saving log\n");
+	char buf[512];//TODO: confirm if we need all this
+	//uint16_t update_number=0;
+
+		
+// log ends
+
+
+
+
+
+
+  while (1) 
+  {
+    pthread_mutex_lock(&waypoint_mutex);
+    if ( new_waypoint ){
+      // Grab parameters from the global structure (but only when the new_waypoint is flagged)
+      target_lat = waypoint.latitude;
+      target_lon = waypoint.longitude;
+      target_altitude = waypoint.altitude;
+      max_output_horizontal = waypoint.max_output; //TODO: this is not speed. is output, pitch and roll 
+      distance_tolerance = waypoint.distance_tolerance; //TODO: this should disappear in the future => error of the GPS position
+      
+      new_waypoint = 0; // new waypoint was read and loaded
+    }
+    pthread_mutex_unlock(&waypoint_mutex);
+    
+    //Waits for a min of satellites to fly
+    //drk_wait_for_X_sats(MIN_NUM_SATS_TO_FLY);
+    
+    
+		
+
+		temp_gps = drk_gps_data() ;	
+		// i decided that if the sample is old, i return num_sats = 0 to inform the app about it.
+		if ( temp_gps.index == gps_last_sample_idx )
+			temp_gps.num_sats = 0 ;
+		else
+			
+
+
+		  distance = drk_gps_coordinates_mydistance(target_lat, target_lon); //returns -1 if there are < 3 sats
+
+		  if ( temp_gps.num_sats <= 3 )
+		  {
+		  	//TODO: the drone should STOP if the GPS is gone for more than 3 or 4 secs! 
+		    printf("AC@ ***GPS OUTAGE ****\n");
+				drk_gps_print();
+
+
+		  }
+		  else
+				// **PID** computation here!
+		  {
+
+				//print GPS data	- debug	
+				drk_gps_print();
+		  	printf("AC@ distance %3.1lfm\n", distance );// to current waypoint
+	 
+				//Hz*m = m/s .  calculates instantaneous speed based on diff of distances over times
+				linear_speed = refresh_rate * ( distance - last_distance ); 
+
+				// Get vertical error //TODO: change this to a API config on altitude. Sanjay said it's possible
+				pressure_altitude = drk_lpf_abs_altitude(); //this works even without taking off ;)
+				ultra_altitude = drk_ultrasound_altitude(); //this works only after taking off.
+				if (ultra_altitude < MIN_ALTITUDE_SAFETY)
+					vertical_error = MIN_ALTITUDE_SAFETY - ultra_altitude ; 
+				else
+					vertical_error = target_altitude - pressure_altitude ; 
+
+
+		    // Direction (heading error):
+		    current_spin = drk_gyro_heading() ; //(alfa) Get best heading reading       
+		    target_spin = drk_gps_target_myheading(target_lat, target_lon) ; // (teta) Get direction of target also known as BEARING, @ referential NORTH-SOUTH line        
+		    heading_error = _drk_get_degree_error(current_spin, target_spin) ; // (phi) is the ratio to give to PITCH and ROLL
+
+
+
+
+				// **PID** Compute actuation values (input: V and H errors)
+				if ( distance < distance_tolerance ) 
+				{
+				  //linear_speed = 0.0;
+				  pthread_mutex_lock(&mutex_autonomous_state);//using the same mutex
+				  target_reached = T_REACHED;     
+					sum_distance = 0 ;
+				  pthread_mutex_unlock(&mutex_autonomous_state);
+				}
+				else
+				{
+					// Horizontal component is computed via a PID controller (bounded output).
+				  pthread_mutex_lock(&mutex_autonomous_state) ;
+				  target_reached = T_NOT_REACHED ;
+				  pthread_mutex_unlock(&mutex_autonomous_state) ;
+
+				  //Compute desired velocity Vector (1.magnitude and 2.direction):
+
+				  // 1. Magnitude:
+				  pthread_mutex_lock( &mutex_pid_params );
+				  output_horizontal = kp_h * distance + ki_h * sum_distance + kd_h * linear_speed;
+				  pthread_mutex_unlock( &mutex_pid_params );
+
+				  output_horizontal = (output_horizontal > max_output_horizontal) ? max_output_horizontal : output_horizontal ;
+				  output_horizontal = (output_horizontal < -max_output_horizontal) ? -max_output_horizontal : output_horizontal ;
+					
+
+				  // Translate this Magnitude and Direciton into PITCH and ROLL:
+				  output_horizontal_tangential_component = output_horizontal * -cos(heading_error*DEGREE2RADIAN) ;//* TODO:drk_degrees_to_radians()
+				  output_horizontal_normal_component = output_horizontal * sin(heading_error*DEGREE2RADIAN); //TODO:drk_degrees_to_radians()
+
+				  //printf("heading %f, target heading %f\n", current_spin, target_spin);
+
+				  // (PID) Update distance and sum_distance for next iteration:
+				  last_distance = distance;
+				  sum_distance += distance; 
+				}
+				
+				//Vertical Control - aka altitude control:
+				output_vertical = kp_v * vertical_error;
+				output_vertical = (output_vertical > 0.98) ? 0.98 : output_vertical ;
+				output_vertical = (output_vertical < -0.98) ? -0.98 : output_vertical;
+
+		 		// read the current state of the A.C.
+				pthread_mutex_lock(&mutex_autonomous_state);
+				autonomous_state_tmp = autonomous_state;
+				pthread_mutex_unlock(&mutex_autonomous_state);
+			} //end of If - outage vs no-outage 
+
+
+
+		 
+
+			/* write log line with Sensor readings, and Outputs give  */
+			// starts here
+			// TODO: ony used here. purge non esential variables
+			latitude = temp_gps.latitude;
+			longitude = temp_gps.longitude;
+			vtg_speed = temp_gps.groundSpeed /3.6 ; // in SI        (km/h -> m/s)
+			vtg_heading = temp_gps.trueTrack ; // in degrees //TODO: use SI rads 
+
+
+
+			//			sprintf(buf, "#%d Palt %2.3f Ualt %2.3f lat %.6f lon %.6f dist %.2f gyrohead %.2f vtghead %.2f bearing %.2f vtg_m/s %.3f GPSspeed_m/s %.3f\n",
+			time_t seconds_past_epoch = time(0);
+			sprintf(buf, "%d %2.3f %2.3f %d %.6f %.6f %.6f %.6f %.2f %.2f %.2f %.2f %.2f %.3f %.3f %.3f %.3f\n",
+				(int)seconds_past_epoch, pressure_altitude, ultra_altitude, 
+				temp_gps.num_sats, latitude, longitude, target_lat,target_lon, distance,
+	 			vtg_heading, vtg_speed, current_spin, target_spin, heading_error, 
+				output_horizontal_tangential_component,  output_horizontal_normal_component, output_vertical 		);
+
+
+
+
+			fprintf(sensor_log, "%s", buf);
+			fflush(sensor_log);//TODO: is this relevant?
+
+	
+			//printf("AC@ sats %d, dist to target: %f\n",temp_gps.num_sats, distance );
+			// write log, ends here**
+
+			// update index of last sample id.
+			gps_last_sample_idx = (uint16_t) temp_gps.index ;	
+
+			// **PID** ACTUATE the system (if autonomous_state == FLYING):
+		  if ( autonomous_state_tmp == FLYING)
+		  {
+
+		    drk_translate(output_horizontal_tangential_component, output_horizontal_normal_component, 0.0, output_vertical, 1000.0/refresh_rate);
+		    printf("AC@ moving..\n ") ;				 
+				//usleep(1000000/refresh_rate);
+		  }
+		  else // PAUSED
+		  {
+				drk_hover( 0 ) ;
+		    sum_distance = 0 ; // erase sum distance to avoid huge 'I' error component.
+		    sleep( 2 );
+		  }
+
+
+
+
+
+  } //while1 ends here
+
+
+} 
+
+
+
+
+
+
+	
+
+
+
+
+
+
+
+
+
+
+// Returns 1 if current position is target position (+- distance_tolerance)
+// 0 otherwise
+uint8_t drk_autonomous_target_reached()
+{
+  return target_reached ;
+}
+
+gps_waypoint_t drk_autonomous_get_waypoint()
+{
+
+}
+
+/* Gives drone new coordinates; stops current waypoint */
+void drk_autonomous_set_waypoint(double latitude, double longitude, double altitude,  double speed, double tolerance)
+{
+  pthread_mutex_lock(&mutex_autonomous_state);
+  target_reached = T_NOT_REACHED;
+  pthread_mutex_unlock(&mutex_autonomous_state);
+
+  //feeding the global var 'waypoint', used by the controller thread
+  pthread_mutex_lock(&waypoint_mutex);
+  waypoint.latitude = latitude;
+  waypoint.longitude = longitude;
+  waypoint.altitude = altitude;
+  waypoint.max_output = speed;
+  waypoint.distance_tolerance = tolerance;
+  new_waypoint = 1;
+  pthread_mutex_unlock(&waypoint_mutex);
+	printf("AC@ new waypoint: %f, %f\n", latitude, longitude);
+}
+
+/* Distance in degrees from the spin 
+ * POSITIVE VALUE: You are to the left, turn right
+ * NEGATIVE VALUE: You are to the right, turn left */
+double _drk_get_degree_error(double spin, double target)
+{
+  double dist = target - spin;
+  if (dist > 180)
+    dist -= 360;
+  else if (dist < -180)
+    dist += 360;
+  return dist;
+}

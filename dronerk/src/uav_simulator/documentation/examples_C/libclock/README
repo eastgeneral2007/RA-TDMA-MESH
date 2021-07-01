@@ -1,0 +1,4 @@
+Thiss code compiles into a library that simplifies sccess to simulator clock functions.
+
+Apps should link this library and use its functions safely. 
+include "libclock.h" in the apps

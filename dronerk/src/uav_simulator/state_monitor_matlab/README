@@ -1,0 +1,13 @@
+viz.m is the "VIZUALIZER" of the simulator.
+it is written in matlab script and draws the current positions and tracks of the UAVs by reading a shared memory that the uav_simulator process is updating.
+
+in console, open a matlab session without GUI:
+
+$ matlab -nodesktop
+
+Then run the network vizualizer 
+
+>> run viz
+
+
+before opening this vizualizer, please run ./uav_simulator <n>

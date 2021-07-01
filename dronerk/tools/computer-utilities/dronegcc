@@ -1,0 +1,7 @@
+#!/bin/sh
+# This is a shortcut to use the ARM cross-compiler.
+# To use, replace git_directory with the path to your git directory,
+# chmod +x dronegcc, then copy it to /usr/bin
+git_directory="/home/nat/git/"
+compiler_path="toolchain/arm-2009q1/bin/arm-none-linux-gnueabi-gcc"
+$git_directory$compiler_path

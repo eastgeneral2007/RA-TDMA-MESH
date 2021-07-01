@@ -1,0 +1,4 @@
+this folder includes some examples of UAV code/application that operates with the simulator, written in C.
+We interact with the simulator via UDP sockets and memory share so any language might be able to do that interface.
+
+For clock manipulation access, compile and use libclock.so start by compiling libclock shared library and link it to every app you do. this lib is able to access the simulator clock

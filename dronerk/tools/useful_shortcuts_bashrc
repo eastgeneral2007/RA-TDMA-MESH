@@ -1,0 +1,32 @@
+# xsoulp
+#in export, i cant use ~/ for home .idk why. Luis Pinto
+export DRK_ROOT='/home/xsoulp/dronerk_new/dronerk' 
+#export DRK_ROOT='~/dronerk_new/dronerk'
+alias godrk='cd ${DRK_ROOT}/src/libs/drk_api'
+alias gogps='cd ${DRK_ROOT}/src/projects/experimental/gps'
+alias gosc='cd ${DRK_ROOT}/src/projects/experimental/sensing_capacity'
+alias gopdr='cd ${DRK_ROOT}/src/projects/experimental/link_pdr'
+
+mytnetfx() {
+    #do things with parameters like $1 such as
+    telnet 192.168.1.$1 
+}
+mytnetfx2() {
+    #do things with parameters like $1 such as
+    telnet 192.168.2.$1 
+}
+
+alias tnet=mytnetfx
+alias tnet2=mytnetfx2
+
+myftpfx() {
+    #do things with parameters like $1 such as
+    ftp 192.168.1.$1 23
+}
+alias xftp=myftpfx
+
+# omnet stuff
+export PATH=$PATH:/opt/omnetpp-4.6/bin
+source /opt/ros/jade/setup.bash
+source ~/catkin_jade_workspace/devel/setup.bash 
+alias catmake="catkin_make -C ~/catkin_jade_workspace"

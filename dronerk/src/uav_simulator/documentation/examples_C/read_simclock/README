@@ -1,0 +1,6 @@
+This app simply reads the clock of the world_simulator app.
+You can also play arround and pause, resume the clock as you wish.
+
+Please run world_simulator app BEFORE, otherwise this app has nothing to read from..
+
+not sure it works

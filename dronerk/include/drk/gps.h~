@@ -1,0 +1,105 @@
+/**
+ * gps.h
+ */
+
+#ifndef _GPS_H_
+#define _GPS_H_
+
+//#include <termios.h>
+//#include <stdio.h>
+//#include <stdlib.h>
+//#include <string.h>
+//#include <fcntl.h>
+//#include <pthread.h>
+//#include <vector.h>
+//#include <drk.h>
+//#include <sys/syscall.h>
+//#include <sched.h>
+//#include <drk_sched.h>
+
+
+/* Serial constants */
+#define	BAUDRATE	B115200
+#define DATABITS	CS8	
+#define STOPBITS	CSTOPB
+#define PARITYON	0
+#define PARITY		0
+
+#define EARTH_RADIUS 6378137
+#define LON_RADIUS   6378137
+#define LAT_RADIUS   6371009
+
+/* Print error messages */
+#define OSS 3
+
+typedef struct {
+	double latitude; // DRK lat (or raw if not available)
+	double longitude; // DRK lon (or raw if not available)
+	double altitude; // gps altitude. TODO: status unknown
+	double UTC;
+	int quality;
+	int num_sats;
+	unsigned int index;
+
+	//newly added on 06/02/13
+	int date; 		    // from GPRMC
+	float hPrecise;     //from $GPGGA - horizontal dilution of precision 
+	double trueTrack;   // from VTG data-Track, degrees
+	double groundSpeed; //from VTG data - Speed, Km/hr
+
+	//newly added on 01/08/15
+	double spp_lat ; // single point position lat RAW
+	double spp_lon ;  //single point position lon RAW
+} gps_t;
+
+/* Accessors for GPS data */
+double GPS_latitude();
+double GPS_longitude();
+double GPS_altitude();
+
+int drk_gps_get_numsats();
+int drk_wait_for_gps();
+int _wait_for_gps(int time);
+void _drk_set_basestation();
+void drk_calibrate_north();
+int drk_calibration_data_get();
+void drk_calibration_data_set(int xx, int xn, int yx, int yn, int zx, int zn, int offset, int g_offset);
+void drk_calibration_data_print();
+
+
+/* Helper function definitions */
+//double drk_degrees_to_radians(double degrees);
+//double drk_radians_to_degrees(double radians);
+//double drk_nmea_to_decimal(double coordinate);
+
+gps_t drk_gps_data();
+
+gps_t drk_gps_copy();
+
+/* Check for a GPS fix on the current drone's GPS */
+int drk_gps_myfix();
+
+/* Check to see if a given GPS data point was valid */
+int _drk_gps_fix(gps_t target);
+
+/* Calculate the distance between two coordinate pairs */
+double drk_gps_coordinates_distance (double lat1, double long1, double lat2, double long2);
+
+/* Calculate the distance between two GPS structs */
+double drk_gps_struct_distance (gps_t gps1, gps_t gps2);
+
+/* Calculate the distance between current position and a coordinate pair */
+double drk_gps_coordinates_mydistance (double target_lat, double target_long);
+
+/* Calculate the distance between current position and a GPS struct */
+double GPS_mydistance_Struct (gps_t target);
+
+double drk_gps_target_heading (double my_lat, double my_long, double target_lat, double target_long);
+double drk_gps_target_myheading (double target_lat, double target_long);
+int drk_cartesian_myheading(double target_lat, double target_long);
+int drk_cartesian_heading(double my_lat, double my_long, double target_lat, double target_long);
+
+/* Debugging methods */
+void drk_gps_print();
+
+#endif // _GPS_H_

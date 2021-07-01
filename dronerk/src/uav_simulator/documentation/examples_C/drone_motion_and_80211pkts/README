@@ -1,0 +1,10 @@
+good example of uav application that sends/receive actuation/sensor data, as well as 802.11pkts
+there is a string sent periodically to some userinput destination.
+run:
+./uav_sim 1 1 2
+and also
+./uav_sim 2 0 0 
+to initiate two UAVs (#1 and #2), where #1 sends string messages to #2
+
+note:compile libclock first, the library that interfaces with simulator clock.
+

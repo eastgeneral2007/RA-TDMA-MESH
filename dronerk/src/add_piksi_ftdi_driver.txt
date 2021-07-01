@@ -1,0 +1,6 @@
+#sudo chmod 666 /sys/bus/usb-serial/drivers/ftdi_sio/new_id
+#nano /sys/bus/usb-serial/drivers/ftdi_sio/new_id
+
+#add vendor and prod id like:
+#0403 6014
+echo "0403 6014" > /sys/bus/usb-serial/drivers/ftdi_sio/new_id

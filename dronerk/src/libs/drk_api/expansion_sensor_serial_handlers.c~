@@ -1,0 +1,588 @@
+/**
+ * expansion_sensor_serial_handlers.c
+ * aka ESSH
+ */
+
+#include "drk/expansion_sensor_serial_handlers.h"
+
+#include <pthread.h>
+#include <string.h>
+#include <termios.h>
+#include <stdio.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <sys/mman.h>
+#include <math.h>
+
+#include "drk/drk.h"
+#include "drk/expansion_sensor_api.h"
+#include "drk/gps.h"
+
+/****************
+ * Externs
+ ***************/
+extern pthread_mutex_t gps_mutex;//to protect radio rx buf of serial_buf
+extern int last_compass;
+extern int last_GPS;
+extern int last_radio;
+
+/*******************************************************************************
+ * Globals
+ ******************************************************************************/
+struct termios serial_tio;
+struct global_serial *serial_buf; 
+
+double base_lat = 0;
+double base_lon = 0;
+/*******************************************************************************
+            SETUP FUNCTIONS
+*******************************************************************************/
+
+/* Open the device and configure the port */
+
+//this is called from drk.c @ drk_init()
+int _drk_expansion_serial_init(uint8_t usbport)
+{
+  memset(&serial_tio,'\0',sizeof(serial_tio));
+  if (drk_open_serial_port(usbport) < 0)
+    return -1;
+
+  /* extract baseline lat lon from file */
+  // TODO also put this into gps api file
+/*
+  // TODO allow base file name to be passed in as a param
+  base_lat = 0;
+  base_lon = 0;
+  FILE *basefile = fopen("./piksibase.txt", "r");
+  if(basefile != NULL)
+  {
+    char buf[80];
+    if((fgets(buf, sizeof(buf), basefile) != NULL))
+    {
+      puts(buf);
+      if(sscanf(buf, "%lf\t%lf\n", &base_lat, &base_lon) != 2)
+        puts ("ESSH@ Error: base lat and lon could not be read from line");
+      else
+        printf ("ESSH@ base_lat: %lf\tbase_lon: %lf\n", base_lat, base_lon);
+    }
+    else
+    {
+      puts ("ESSH@ Error: piksibase.txt could not be read");
+    }
+    fclose(basefile);
+  }
+  else
+  {
+    puts("ESSH@ Error: piksibase.txt could not be opened");
+  }
+*/
+
+  // hardcode base_lat and base_lon
+  //base_lat = 40.442043;
+  //base_lon = -79.944991;
+
+  /* Set up any other global variables */
+  last_compass = 0;
+  last_GPS = 0;
+  last_radio = 0;
+  
+  if((serial_buf = calloc(1, sizeof(struct global_serial)) ) == NULL){
+		printf("ESSH@ error allocating memory\n");
+		drk_exit(EXIT_FAILURE);
+  }
+
+  if ((serial_buf->semaphore = sem_open("serial_sem", O_CREAT, 0777, 1)) == SEM_FAILED)
+  {
+    printf("ESSH@ Semaphore failed\n");
+    drk_exit(EXIT_FAILURE);
+  }
+
+  // Initialize sensor structures:
+  gps_t temp_gps;
+  pthread_mutex_lock(&gps_mutex);
+  memcpy(&(serial_buf->gps_buf), &temp_gps, sizeof(temp_gps));
+  pthread_mutex_unlock(&gps_mutex);
+  
+  //struct infrared temp_ir = {0,0,0,0,0};
+  //memcpy(&(serial_buf->infrared_buf), &temp_ir, sizeof(temp_ir));
+  
+  //serial_buf->grideye_buf.index = 0;
+  //serial_buf->grideye_buf.frame = 0;
+  //(serial_buf->read_buf_pos) = 0;
+  //(serial_buf->write_buf_pos) = 0;
+  //memset(serial_buf->packet_udp_buf,'\0' ,sizeof(struct drk_udp_packet) * PACKET_BUF);
+  //memset(serial_buf->packet_buf,'\0' ,sizeof(struct drk_packet) * PACKET_BUF);
+  //sem_post(serial_buf->semaphore);
+  
+  return 0;
+}
+
+/* Dispatch a thread to continuously receive data */
+/*
+int _drk_expansion_gather_data()
+{
+    if (!(serial_pid = fork()))
+    {
+        printf("****** SERIAL PID [%d] *******\n", getpid());
+        signal(SIGTSTP, ignore_signal);
+        signal(SIGINT, ignore_signal);
+        
+        struct sched_param p;
+    
+        p.sched_priority = 6;
+    
+        sched_setscheduler(getpid(),SCHED_FIFO,&p);
+        
+        //_drk_expansion_sensor_thread();
+        drk_exit(EXIT_SUCCESS);
+    }
+    return 1;
+}
+*/
+/* Continuously receive data and process it */
+/*
+void _drk_expansion_sensor_thread()
+{   
+
+    char lineBuffer[SENSOR_LINE_LENGTH];
+    int bytesRead = 0;
+    int offset=0;
+    int i=0;
+    // Make sure the port has been initialized 
+    if(port_fd == -1)
+    {
+        perror("Error: Port not initialized!");
+        return;
+    }
+    
+    FILE *serfile;
+    serfile = fopen("./timestamps/serial.txt", "w");
+  
+    // Receiving loop 
+    while (1)
+    {
+      
+      //fprintf(serfile, "5\t%f\n", drk_elapsed_time_secs());
+      //bytesRead = read(port_fd, lineBuffer, SENSOR_LINE_LENGTH-1); // Save 1 for \0 
+      //fprintf(serfile, "6\t%f\n", drk_elapsed_time_secs());
+      
+      // Since read is in blocking mode, we don't need a sleep
+      bytesRead=0;
+      if (bytesRead > 0)
+      {
+          _drk_parse_line(lineBuffer, bytesRead);
+      }
+      usleep(100000);
+      
+      sleep(1000);
+    }
+}
+*/
+
+/*******************************************************************************
+                PARSING
+*******************************************************************************/
+/* Process one line of serial data */
+void _drk_parse_line(char line[SENSOR_LINE_LENGTH], int bytesRead)
+{
+  (void)(bytesRead); // suppress warnings
+	//printf("got a line\n") ;
+	//printf("%s\n" , line ) ;
+  /* Compare checksum to ensure intact packets */
+  if (_drk_1ate_packet(line) != 1)
+    return;
+
+  /* Dispatch the proper handler for each line */ 
+  if (!strncmp(line, "$GPGGA", 6))  /* GPS: GGA packet */
+    _drk_gga_handler(line);
+
+  else if (!strncmp(line, "$GPGLL", 6)) {} /* ignore GPS: GLL packet */
+  else if (!strncmp(line, "$GPGSA", 6)) {} /* ignore GPS: GSA packet */
+  else if (!strncmp(line, "$GPGSV", 6)) {}   /* GPS: GSV packet */
+  else if (!strncmp(line, "$GPRMC", 6)) /* GPS: RMC packet */
+    _drk_rmc_handler(line);
+  else if (!strncmp(line, "$GPVTG", 6)) /* GPS: VTG packet */
+    _drk_vtg_handler(line);
+ // else if (!strncmp(line, "$GRIDEYE", 8)) /* Grideye pixel row */
+ //   _drk_grideye_handler(line);
+ // else if (!strncmp(line, "$INFRARED", 9)) /* Infrared distance */
+ //   _drk_infrared_handler(line);
+  else if(!strncmp(line, "$GPGGP", 6)) 
+{
+		//puts("ggp! piksi relative data\n");
+    _drk_ggp_handler(line);
+}
+  else if(!strncmp(line, "$RAD", 4)) /* Radio (802.15.4) */
+    printf("ESSH@ RADIO DATA! this shoud not happen\n");
+  else {} /* Unrecognized */
+}
+
+/* Compute the NMEA checksum (XOR of chars between '$' and '*')*/
+int _drk_1ate_packet (char packet[SENSOR_LINE_LENGTH])
+{
+  int start_chars = 1;    // Truncate '$'
+  int end_chars = 5;  // Truncate '*XX\r\n'
+  unsigned int computed_checksum = 0, read_checksum = 0;
+  int packet_length = strlen(packet);
+  int index = 0;
+  
+  if(!strncmp(packet, "nanork@", 7)) // temporarily accept all radio packets
+    return 1;
+  
+  if (packet_length < 10) // Quick sanity check
+    return -1;
+  
+  for (index = start_chars; index < packet_length - end_chars; index++)
+    computed_checksum ^= packet[index];
+  
+  char *packetEnd = packet + (packet_length - (end_chars-1)); // Get 'XX\r\n'
+  sscanf(packetEnd,"%2x\r\n", &read_checksum);
+  
+  if (computed_checksum == read_checksum)
+    return 1;
+  else
+  {
+    if (DEBUG)
+    {
+      printf("FAILURE: packet = %s", packet);
+      printf("End: %s", packetEnd);
+      printf("Computed [%x] Read [%x]\n",computed_checksum, read_checksum);
+    }
+    if(!strncmp(packet, "$RAD", 4)) //temporarily accept all radio packets
+      return 1;
+    return -1;
+  }
+}
+
+/*******************************************************************************
+                SERIAL PACKET HANDLERS
+*******************************************************************************/
+/* Handle Piksi data, relative GPS data */
+void _drk_ggp_handler (char line[SENSOR_LINE_LENGTH])
+{
+	(void)line; // supress warnings ; 
+
+	//printf("%s",line) ;
+  // update gps struct
+	int north, east, down;
+	int vel_north, vel_east, vel_down;
+	double rtk_lat=-1, rtk_lon=-1, spp_lat=-1 , spp_lon=-1 , tmp_lat=-1 , tmp_lon=-1;
+	double altitude, trueTrack, groundSpeed;
+	int8_t spp_num_sats=-1, rtk_num_sats =-1, tmp_num_sats=-1 ;
+	int quality ;
+
+	int matches;
+	uint64_t hexlatitude, hexlongitude; 
+  // Parse the GGP line for data values
+  //matches = sscanf(line, "$GPGGP,%d,%d,%d,%d,%d,%d,%d,%d,%lf,%lf",
+  //  &quality, &num_sats, &north, &east, &down, &vel_north, &vel_east, &vel_down, &latitude, &longitude);
+	matches = sscanf(line, "$GPGGP,%d,%hhd,%d,%d,%d,%d,%d,%d,%hhd,%llx,%llx",
+    &quality, &rtk_num_sats, 
+		&north, &east, &down, 
+		&vel_north, &vel_east, &vel_down,
+		&spp_num_sats , &hexlatitude, &hexlongitude);
+	
+	//printf("ESSH@ dbase = %d\n" , east*east+north*north);
+	//printf("lat lng ::  %lx %lx\n",hexlatitude,hexlongitude);
+	spp_lat = *((double *)&hexlatitude) ;
+	spp_lon = *((double *)&hexlongitude) ;
+	//printf("lat lng ::  %lf %lf\n",spp_lat, spp_lon);
+
+
+
+
+
+  // Check that the line was scanned properly
+  if (matches != 11)
+  {
+    puts ("Parsing error in GGP handler");
+  }
+	else
+	{
+		if ( rtk_num_sats == 0 ) // only SPP availble
+		{
+			tmp_lat = spp_lat ; 
+			tmp_lon = spp_lon;
+			tmp_num_sats = spp_num_sats;
+		}
+		else// we hav diferental gps (rtk) working!
+		{
+			
+
+			// Convert altitude from down
+			altitude = down / 1000.0;
+
+			// calcualte lat lon from NED + base
+			/**
+			 * note: this uses a simple arc length formula, probably not very accurate,
+			 *       particularly with regards to latitude, as LAT_RADIUS is the average
+			 *       radius between equator and pole, which differ by about .33%
+			 */
+
+			// convert coords to meters from mm
+			double north_meters = north / 1000.0;
+			double east_meters = east / 1000.0;
+
+			// convert arclen to radians
+			double north_radians = north_meters / LAT_RADIUS;
+			double east_radians = east_meters / LON_RADIUS;
+
+			// convert radians to degrees
+			double north_degrees = (north_radians) * (180.0 / M_PI);
+			double east_degrees = (east_radians) * (180.0 / M_PI);
+
+			// lat = base + n, lon = base + e
+			rtk_lat = base_lat + north_degrees;
+			rtk_lon = base_lon + east_degrees;
+
+
+			/* calculate VTG from NED */
+			// convert vector to meters from mm
+
+			double vel_north_meters = vel_north / 1000.0;
+			double vel_east_meters = vel_east / 1000.0;
+
+			// calculate heading from vector
+			double heading_rads = atan2(vel_east*1.0, vel_north*1.0);
+			trueTrack = heading_rads * (180 / M_PI);
+
+			//convert from +/- 180 to 0-360
+			if(vel_east < 0){
+				trueTrack = 360+trueTrack;
+			}
+
+			// calculate velocity from vector
+			groundSpeed = sqrt(pow(vel_north_meters, 2.0) + pow(vel_east_meters, 2.0));
+
+			// convert to km/h
+			groundSpeed = (groundSpeed * 3600.0) / 1000.0;
+
+
+			tmp_lat = rtk_lat ;
+			tmp_lon = rtk_lon ;
+			tmp_num_sats = rtk_num_sats;
+		}
+
+	}
+  // debug
+  //printf("vel_east: %d\tvel_north: %d\n", vel_east, vel_north);
+  //printf("lat: %f\tlon: %f\theading: %f\tspeed: %f\taltitude: %f\n",
+    //latitude, longitude, trueTrack, groundSpeed, altitude);
+
+  /* Write out the values to the struct */
+	//TODO: use gps_mutex, for the gps_buf
+  pthread_mutex_lock(&gps_mutex);
+  serial_buf->gps_buf.latitude = tmp_lat;
+  serial_buf->gps_buf.longitude = tmp_lon;
+  serial_buf->gps_buf.altitude = altitude;
+  serial_buf->gps_buf.quality = quality;
+  serial_buf->gps_buf.num_sats = tmp_num_sats;
+  serial_buf->gps_buf.trueTrack = trueTrack;
+  serial_buf->gps_buf.groundSpeed = groundSpeed;
+  serial_buf->gps_buf.spp_lat = spp_lat ;
+  serial_buf->gps_buf.spp_lon = spp_lon ;
+  serial_buf->gps_buf.index = serial_buf->gps_buf.index + 1 ;
+  pthread_mutex_unlock(&gps_mutex);
+
+}
+
+/* Handle the infrared packet */
+void _drk_infrared_handler(char line[SENSOR_LINE_LENGTH])
+{
+  (void)(line); // suppress warning
+/*
+    int left, right, front, back;
+    
+    int matches = 0;
+    // Parse the line for data values 
+    matches = sscanf(line, "$INFRARED,%d,%d,%d,%d*%*s",
+                    &front, &left, &back, &right);
+                    
+    if (matches != 4) return;
+    
+    struct infrared temp_ir = {0, front, left, back, right};
+    sem_wait(serial_buf->semaphore);
+    temp_ir.index = (serial_buf->infrared_buf).index + 1;
+    memcpy(&(serial_buf->infrared_buf), &temp_ir, sizeof(temp_ir));
+    sem_post(serial_buf->semaphore); 
+*/
+}
+
+/* Handle the grideye packets */
+void _drk_grideye_handler(char line[SENSOR_LINE_LENGTH])
+{
+  (void)(line); // suppress warning
+/*
+  uint16_t temprow[8];
+  double temperature[8];
+  int row = -1;
+  int is_corrupted = 0; // Flag used to check if data is corrupted.
+  
+  int matches = 0;
+  matches = sscanf(line, "$GRIDEYE,%d,%hX,%hX,%hX,%hX,%hX,%hX,%hX,%hX*%*s",
+      &row, &(temprow[0]), &(temprow[1]), &(temprow[2]), &(temprow[3]),
+      &(temprow[4]),&(temprow[5]),&(temprow[6]),&(temprow[7]));
+                  
+  // Detect sensor data corruption.
+  if (matches != 9) is_corrupted = 1;
+  if (row < 0 || row > 7) is_corrupted = 1;
+      
+  // Temperature conversion if no corruption detected. 
+  if (is_corrupted == 0)
+  {
+    int i;
+    for (i = 0; i < 8; i++) 
+      temperature[i] = (temprow[i]*0.25); //to get Celsius
+  }
+
+  
+  
+	sem_wait(serial_buf->semaphore);
+  int prev_index = (serial_buf->grideye_buf).index;
+  
+  if (is_corrupted == 0)
+  {
+    // If not corrupted then fill the grideye_buf row with read temperature. 
+    memcpy(&(serial_buf->grideye_buf).temperature[row], temperature, sizeof(temperature));
+  }
+  else
+  {
+    if (row >= 0 && row <= 7)
+    {
+      // If corrupted but has valid row then fill the grideye_buf row with 0.
+      memset(&(serial_buf->grideye_buf).temperature[row], 0, sizeof(temperature));
+    }
+    else
+    {
+      // If corrupted with invalid row then check previous index and fill appropriate grideye_buf row with 0.
+      if (prev_index != 7)
+        memset(&(serial_buf->grideye_buf).temperature[prev_index+1], 0, sizeof(temperature));
+      else
+        memset(&(serial_buf->grideye_buf).temperature[0], 0, sizeof(temperature));
+    }
+  }
+
+  // Always increment the index counter.
+  (serial_buf->grideye_buf).index++;    
+
+  // Increase the frame counter only if we have received all 8 rows.
+  // Once all 8 rows received, reset index counter. 
+  if (row == 7)
+  {
+    (serial_buf->grideye_buf).frame++;
+    (serial_buf->grideye_buf).index = 0;
+  }
+  sem_post(serial_buf->semaphore); 
+*/
+}
+
+/* Handle the $GPGGA data packet. Contains most of the essential data */
+void _drk_gga_handler(char line[SENSOR_LINE_LENGTH])
+{
+
+	printf("Parsing GGA");
+
+  double latitude, longitude, altitude, UTC;
+  int quality, num_sats;
+  float hPrecise;
+  latitude = longitude = altitude = UTC = -1;
+  quality = 0;
+  num_sats = 0;
+  char N_or_S, E_or_W;
+  int matches = 0;
+  
+  /* Parse the GGA line for data values */
+  matches = sscanf(line, "$GPGGA,%lf,%lf,%c,%lf,%c,%d,%d,%f,%lf,%*s", 
+                  &UTC, &latitude, &N_or_S, &longitude, &E_or_W,
+                  &quality, &num_sats, &hPrecise, &altitude);
+            
+  /* Check that the line was scanned properly */
+  if (matches != 9)
+  {
+    printf("Parsing error in GGA Handler\n");       
+    return;
+  }
+
+  /* Convert the NMEA degree values to decimal for easy calculations */
+  latitude = drk_nmea_to_decimal(latitude);
+  longitude = drk_nmea_to_decimal(longitude);
+  
+  /* Get the right sign */
+  if (N_or_S == 'S')
+    latitude *= -1;
+  if (E_or_W == 'W')
+    longitude *= -1;
+  
+  /* Write the parsed values into the struct */
+  //gps_t temp_GPS = {latitude, longitude, altitude, UTC, quality, num_sats, 0};
+  pthread_mutex_lock(&gps_mutex);
+  /*temp_GPS.index = (serial_buf->gps_buf).index + 1;
+  memcpy(&(serial_buf->gps_buf), &temp_GPS, sizeof(temp_GPS));*/
+  (serial_buf->gps_buf).latitude=latitude;
+  (serial_buf->gps_buf).longitude=longitude;
+  (serial_buf->gps_buf).altitude=altitude;
+  (serial_buf->gps_buf).UTC=UTC;
+  (serial_buf->gps_buf).quality=quality;
+  (serial_buf->gps_buf).num_sats=num_sats;
+  (serial_buf->gps_buf).hPrecise=hPrecise;
+  (serial_buf->gps_buf).index  = (serial_buf->gps_buf).index + 1;
+  pthread_mutex_unlock(&gps_mutex);
+}
+
+/* Handle the $GPVTG data packet. Speed & track*/
+void _drk_vtg_handler(char line[SENSOR_LINE_LENGTH])
+{
+  double trueTrack; // from VTG data-Track, degrees Magnetic
+  double groundSpeed; //from VTG data - Speed, Km/hr
+
+  int matches = 0;
+
+  //$GPVTG,054.7,T,034.4,M,005.5,N,010.2,K*48
+  //$GPVTG,000.0,T,,     M,000.0,N,000.0,K,N*02
+  //      %lf,   T,%*lf, M,%*lf, N,%lf,  K,%*s
+  //matches = sscanf(line, "$GPVTG,%lf,T,%*lf,M,%*lf,N,%lf,K,%*s", 
+
+  //this produces warning matches = sscanf(line, "$GPVTG,%lf,T,,M,%*lf,N,%lf,K,%*s", &trueTrack,&groundSpeed);
+  matches = sscanf(line, "$GPVTG,%lf,T,,M,%*f,N,%lf,K,%*s", &trueTrack,&groundSpeed);
+  
+  //printf("VTG Data: Track:%lf Speed in kmph:%lf",trueTrack,groundSpeed);
+  if (matches != 2)
+  {
+    printf("VTG handler parsing error\n");
+    printf("%d %lf %lf \n",matches,trueTrack,groundSpeed );
+    return;
+  } 
+
+  pthread_mutex_lock(&gps_mutex);
+  (serial_buf->gps_buf).trueTrack=trueTrack;
+  (serial_buf->gps_buf).groundSpeed=groundSpeed;
+  pthread_mutex_unlock(&gps_mutex);
+}
+
+/* Handle the $GPRMC data packet. Current date*/
+void _drk_rmc_handler(char line[SENSOR_LINE_LENGTH])
+{
+  int date;
+
+  int matches = 0;
+
+  //$GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6A
+  //$GPRMC,221147.132,A,4026.6412,N,07956.8179,W,000.0,000.0,180613,,,A*79 <= Taken from Drone-rk
+  //       %d,      AorM,%*lf,   %*c,%*lf,   %*c,%*lf,%*lf  , %d,%*s
+  //produces warning matches = sscanf(line, "$GPRMC,%*lf,%*c,%*lf,%*c,%*lf,%*c,%*lf,%*lf,%d,%*s",  &date);
+  matches = sscanf(line, "$GPRMC,%*f,%*c,%*f,%*c,%*f,%*c,%*f,%*f,%d,%*s",  &date);
+  
+  //printf("%s RMC Date:%d\n",line,date);
+  if (matches != 1)
+  {
+    printf("RMC Handler parsing error\n");
+    return;
+  } 
+
+  pthread_mutex_lock(&gps_mutex);
+  (serial_buf->gps_buf).date=date;
+  pthread_mutex_unlock(&gps_mutex);
+}
+

@@ -1,0 +1,114 @@
+/**
+ * autonomous.h
+ */
+
+#ifndef _AUTONOMOUS_H_
+#define _AUTONOMOUS_H_
+
+#include <stdint.h>
+
+//#include "expansion_sensor_api.h"
+
+/*******************************************************************************
+ * Data
+ ******************************************************************************/
+typedef struct
+{
+  double latitude ;
+  double longitude ;
+  double altitude ;
+  double max_output ; //vector-norm 
+  double distance_tolerance ;
+} gps_waypoint_t ;
+
+/**
+ * Bit vector to be used with the translate function
+ */
+enum TRANSLATE_OPTIONS
+{
+  DRK_CONTINUE  = 0x00000000, // Keep moving when done
+  DRK_HOVER     = 0x00000001, // Return to hover when done
+  DRK_STOP      = 0x00000002, // TODO: Aggressively stop when done (not in yet)
+  DRK_OVERRIDE  = 0x00000004  // Allow control in lockdown
+};
+
+/*******************************************************************************
+                            AUTONOMOUS FLIGHT FUNCTIONS
+*******************************************************************************/
+
+
+
+/**
+ * Pause movement immediately  (used by keyboard thread)
+ */
+void drk_autonomous_pause();
+
+
+/**
+ * Resume flight (used by keyboard thread)
+ */
+void drk_autonomous_resume();
+
+/**
+ * Returns the state of autonomous flight:
+ * PAUSED (1) - no rotor output
+ * FLYING (0) - flying to target
+ */
+uint8_t drk_autonomous_get_state();
+
+
+/**
+ * returns the current waypoint target
+ */
+gps_waypoint_t drk_autonomous_get_waypoint() ;
+
+
+/**
+ * Gives drone new waypoint to go; overwrites current waypoint
+ */
+void drk_autonomous_set_waypoint(double latitude, double longitude, double altitude,
+  double speed, double tolerance);
+
+
+
+/**
+ * Returns 1 if drone is at target position (+- distance_tolerance)
+ * 0 otherwise
+ */
+uint8_t drk_autonomous_target_reached();
+
+
+// INTERNAL USE functions:
+
+/**
+ * Distance in degrees from the spin 
+ * POSITIVE VALUE: You are to the left, turn right
+ * NEGATIVE VALUE: You are to the right, turn left
+ * internal use _
+ */
+double _drk_get_degree_error(double spin, double target);
+
+/*
+ * set PID controller.
+ * Kp_? - porportional ,  Ki_? - integral., Kd_? - differental.
+ * ?_h - horizontal , ?_v - vertical
+ */
+void _drk_autonomous_set_PID(double _kp_h, double _ki_h, double _kd_h,
+  double _kp_v);
+
+/**
+ * initiates autonmous controller
+ * returns -1 if thread can't be spawned
+ */
+int8_t _drk_autonomous_init();
+
+
+/**
+ * while1 Thead that moves the drone to the current waypont
+ * Reaches the point and stays there. Flags ..._target_reached()
+ * GYRO is used, compass used to calibrate.
+ */
+void * _drk_autonomous_move_thread();
+
+
+#endif // _AUTONOMOUS_H_

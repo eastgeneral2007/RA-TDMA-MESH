@@ -1,0 +1,16 @@
+a simple example of uav application that sends/receive actuation/sensor data, as well as 802.11pkts
+there is a string sent periodically to some <dst> destination.
+run:
+./uav_sim <myid> <sender?> <dst>
+
+run this example:
+./uav_sim 1 1 2
+and also
+./uav_sim 2 0 1 
+to initiate two UAVs (#1 and #2), where #1 sends string messages to #2
+
+IMPORTANT NOTES:
+Compile all important shared libraries:
+1)libdrk (for ardrone2.0 motion and sensing) - go to $DRK_ROOT/src/libs/drk_api and run ./sim_make.sh
+2)libsbp (piksi gps) - go to $DRK_ROOT/src/libs/libsbp and run ./simmake.sh
+

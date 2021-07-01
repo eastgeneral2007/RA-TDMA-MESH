@@ -1,0 +1,7 @@
+# !/bin/sh
+# A shortcut to FTP to the drone, then telnet into it
+if [ "$#" -eq "1" ]; then
+  ftp 192.168.1.$1 && telnet 192.168.1.$1
+else
+  ftp 192.168.1.1 && telnet 192.168.1.1
+fi

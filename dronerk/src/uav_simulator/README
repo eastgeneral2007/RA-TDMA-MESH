@@ -1,0 +1,11 @@
+to compile the simulator, run :
+$ ./compile_link.sh
+
+to run:
+./uav_simulator <numOfUAVs>
+
+
+%%
+
+To simulate some UAVS, go to src/projects/experimental/ and choose some code to run. 
+*drone_motion_and_80211pkts* is a good hello world.

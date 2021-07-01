@@ -1,0 +1,33 @@
+First we need to export $DRK_ROOT on file ~/.bashrc
+
+Simulator:
+- Go to $DRK_ROOT/src/libs/drk_api
+- ./sim_make.sh
+
+- Go to $DRK_ROOT/src/libs/libsbp
+- ./simmake.sh && make
+
+- Go to $DRK_ROOT/src/uav_simulator
+- ./compile_link.sh
+- ./uavworld_simulator <Number_of_UAV>  
+
+- Open another terminal (one for each UAV in simulator) and go to $DRK_ROOT/src/projects/experimental/mesh_simulator
+- make
+- ./mesh_UAV_sim <ID>
+
+
+----------------------------------------------
+
+Real:
+- Go to $DRK_ROOT/src/libs/drk_api
+- ./make_drklib.sh
+
+- Go to $DRK_ROOT/src/libs/libsbp
+- ./simmake.sh && make
+
+- Go to $DRK_ROOT/src/projects/experimental/mesh
+- make
+- ./mesh_tdma_BD <ID>
+
+
+To use the synchronization features uncomment the code and follow the instructions on mesh_simulator and mesh

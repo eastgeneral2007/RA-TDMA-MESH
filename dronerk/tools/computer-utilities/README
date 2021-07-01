@@ -1,0 +1,8 @@
+1: Open dronegcc in a text editor and set git_directory to your DroneRK git path
+2: Give these scripts execute permission: chmod +x drone droneftp dronegcc
+3: Copy them to /usr/bin: sudo cp drone droneftp dronegcc /usr/bin/
+
+Now you can use all three as standard unix commands.
+dronegcc: compile programs for the drone
+drone: telnet into the drone
+droneftp: FTP to the drone, then telnet into the drone
