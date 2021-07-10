@@ -280,7 +280,7 @@ uint16_t getSlotWidth_givenId(uint8_t slot_id)
 /* THIS FUNCTION is the only that *WRITES* on >myslot< */
 int tdma_syncronizeSlot(int32_t *delta)
 {
-	return E_SUCCESS;
+	//return E_SUCCESS;
 	//PRINTF_FL_ERR("My table slot width %" PRIu16 "ms\n" , getSlotWidth_givenId(Param_tdma.slot_id) );
 	
 	//if ( getSlotWidth_givenId(Param_tdma.slot_id) != TDMA_getOwnSlotWidth() )
@@ -313,6 +313,8 @@ int tdma_syncronizeSlot(int32_t *delta)
 	//int32_t delta = 0 ;
 	
 	/* Compute some metrics using delay of every prev packet */
+	
+	PRINTF_FL("ARRAY SIZE: %ld\n", tmp_pktdelay_array_len);
 	if (tmp_pktdelay_array_len >= 1) //10
 	{
 		//mean = computeMean( tmp_pktdelay_array , tmp_pktdelay_array_len );
@@ -338,7 +340,7 @@ int tdma_syncronizeSlot(int32_t *delta)
 		/* use *1st-pkt* to syncronize */
 		//*delta = tmp_pktdelay_array[0];
 
-		#define NUM_DRONES 3
+		#define NUM_DRONES 4
 
 		float aggByNode[NUM_DRONES] = {0};
 		float delayByNode[NUM_DRONES][PKTDELAY_ARRAY_SIZE];
@@ -503,6 +505,7 @@ error_t tdma_recordPktDelay( tdma_header_t tdma_header )
 	
 	pthread_mutex_lock( &Mutex_delay ) ; /* protect from editing - tdma_syncronizeSlot edits stuff too */
 	Pktdelay_array_counter++ ; /* keep track of how many samples we are using to sync our 'clock', i.e., slot */
+	PRINTF_FL("Pktdelay array counter: %ld", Pktdelay_array_counter);
 	Pktdelay_array[Pktdelay_array_counter] = delay_ms ; /* pos 0 is not used */
 	Pktdelay_array_sender[Pktdelay_array_counter] = tdma_header.slot_id;
 	pthread_mutex_unlock( &Mutex_delay ) ;

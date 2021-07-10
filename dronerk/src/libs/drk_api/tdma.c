@@ -98,7 +98,7 @@ static queue_ptr_t 						TDMA_rx_queue_ptr ;
 static sem_t 							Receive_sem ; /* to sleep TDMA_receive caller. inform there's packets to read */
 static sem_t 							rx_queue_freespots_sem ;
 
-int **spanning_tree;
+uint8_t **spanning_tree;
 
 void sugusr_hdlr()
 {
@@ -112,17 +112,17 @@ void sugusr_hdlr()
  * @todo add "drk" prefix to all 
  **********************************************************************/
 
-void drk_TDMA_setSpanningTree(int **tree, int numDrones, int flag){
+void drk_TDMA_setSpanningTree(uint8_t **tree, int numDrones, int flag){
 
 	
 	printf("Func TDMA_setSpanningTree Started\n");
 	int a,b;
 
 	if(flag == 0){
-		spanning_tree = (int **) malloc(numDrones * sizeof(int *));
+		spanning_tree = (uint8_t **) malloc(numDrones * sizeof(uint8_t *));
 
 		for(int row = 0; row<numDrones; row++){
-			spanning_tree[row] = (int *) malloc(numDrones * sizeof(int));
+			spanning_tree[row] = (uint8_t *) malloc(numDrones * sizeof(uint8_t));
 		}
 	}
 
