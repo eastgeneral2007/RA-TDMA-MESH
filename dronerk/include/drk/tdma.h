@@ -55,7 +55,7 @@ error_t 	drk_TDMA_init( uint8_t my_id );
 /** close and cleanup module **/
 error_t 	drk_TDMA_close( void ) ;
 
-void drk_TDMA_setSpanningTree(int **tree, int numDrones, int flag);
+void drk_TDMA_setSpanningTree(uint8_t **tree, int numDrones, int flag);
 
 /** 
  * @brief  Get newly rcvd packets. 
