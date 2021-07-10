@@ -1,6 +1,6 @@
 /* program that sends matrix to the others drones */
 #include "main.h"
-#define NUM_DRONES 3
+#define NUM_DRONES 4
 #define TIMEOUT 300            //(TDMA_getRoundTime()*3)  //Milliseconds
 
 typedef struct{
@@ -12,7 +12,7 @@ typedef struct{
 Data data;
 int myId;
 int timeout[NUM_DRONES];
-int **mst;
+uint8_t **mst;
 
 pthread_mutex_t mutex;
 
@@ -81,51 +81,56 @@ void updateMatrix(Data NewData, int senderIP){
 	data.matrix[myId - 1][senderIP - 1] = 1; //PDR_get_in(senderIP);
 }
 
-/*
-void primAlgorithm(float matrix[NUM_DRONES][NUM_DRONES], float **mst){ // O(E log V)
-
+void primAlgorithm(uint8_t matrix[NUM_DRONES][NUM_DRONES], uint8_t **mst){ // O(E log V)
 
 	int i,z,x,y;
 
-
-  int visited[NUM_DRONES];
-
-  for(i = 0; i < NUM_DRONES; i++){
-    visited[i] = 0;
-  }
-
-  int numEdge = 0;
-  float min;
-
-  visited[0] = 1; //Iniciamos a pesquisa no primeiro no
-
-  while(numEdge < NUM_DRONES-1){
-    min = 1.1;
-    x = 0; // row number
-    y = 0; // col number
-
-    for(i = 0; i < NUM_DRONES; i++){
-      if(visited[i] == 1){
-	for(z = 0; z < NUM_DRONES; z++){ //Vamos procurar todos os vizinhos do no
-	  if((visited[z] == 0) && (aux_mst[i][z] == 1)){
-	    if(min > aux_mst[i][z]){
-	      min = aux_mst[i][z];
-	      x = i;
-	      y = z;
-	    }
-	  }
+	//Reset MST	
+	for(i = 0; i < NUM_DRONES; i++){
+		for(x = 0; x < NUM_DRONES; x++){
+			mst[i][x] = 0;
+		}
 	}
-      }
-    }
 
-    mst[x][y] = aux_mst[x][y];
-    mst[y][x] = aux_mst[x][y];
+	//Prim Algorithm
+	int visited[NUM_DRONES];
+
+	for(i = 0; i < NUM_DRONES; i++){
+		visited[i] = 0;
+	}
+
+	int numEdge = 0;
+	uint8_t min;
+
+	visited[0] = 1; //Iniciamos a pesquisa no primeiro no
+
+	while(numEdge < NUM_DRONES-1){
+		min = 2;
+		x = 0; // row number
+		y = 0; // col number
+
+		for(i = 0; i < NUM_DRONES; i++){
+			if(visited[i] == 1){
+				for(z = 0; z < NUM_DRONES; z++){ //Vamos procurar todos os vizinhos do no
+					if((visited[z] == 0) && (matrix[i][z] == 1)){
+						if(min > matrix[i][z]){
+							min = matrix[i][z];
+							x = i;
+							y = z;
+						}
+					}
+				}
+			}
+		}
+
+    mst[x][y] = matrix[x][y];
+    mst[y][x] = matrix[x][y];
     visited[y] = 1;
     numEdge++;
   }
 }
-*/
 
+/*
 //Function created by other students
 void spanning_tree(uint8_t adj_matrix[NUM_DRONES][NUM_DRONES], int** aux_matrix)
 {
@@ -219,6 +224,8 @@ void spanning_tree(uint8_t adj_matrix[NUM_DRONES][NUM_DRONES], int** aux_matrix)
     printf("4\n");
 
 }
+*/
+
 
 /* local var changed by threads */
 static volatile int proceed = 1;
@@ -238,10 +245,10 @@ void setActuation( actuator_t act_v )
 /*******************************************************************************
                 STRUCT UPDATERS
 *******************************************************************************/
-/* Sends a command to the drone every ~1s */
+
 static void* txthread() {  //(void* args)
 
-	PRINTF_FL("TX initiated. sending a msg every second\n");
+	PRINTF_FL("TX initiated.\n");
 
 	Data text;
 	text.type = 0;
@@ -252,17 +259,19 @@ static void* txthread() {  //(void* args)
 	int dst;
 	int i;
 	while (proceed) {
-
-		for (dst = 1; dst <= NUM_DRONES; dst++) { // TEXT packet
-			if (dst != (myId)) {
-				error_t ret = TDMA_send(dst, pkt_text_size, pkt_text, 0);
-				if (E_SUCCESS != ret)
-					PRINTF_FL_WARN("something failed: %s\n", getError(ret));
-				microsleep(1e4); //10ms between sending to each node
+		
+		for(i = 0; i < 50; i++){
+			for (dst = 1; dst <= NUM_DRONES; dst++) { // TEXT packet
+				if (dst != (myId)) {
+					error_t ret = TDMA_send(dst, pkt_text_size, pkt_text, 0);
+					if (E_SUCCESS != ret)
+						PRINTF_FL_WARN("something failed: %s\n", getError(ret));
+					microsleep(1e3); //1ms between sending to each node
+				}
 			}
 		}
 		
-		microsleep(6e5);
+		microsleep(1e5);
 	}
 
 	return NULL;
@@ -293,10 +302,10 @@ static void *rxthread()//(void* args)
 
 				updateMatrix(*pkt_ptr, senderIP);
 
-				//primAlgorithm(data.matrix, mst);
+				primAlgorithm(data.matrix, mst);
 
-				/* Uncomment for synchronization
-				spanning_tree(data.matrix, mst);
+				// Uncomment for synchronization
+				//spanning_tree(data.matrix, mst);
 				drk_TDMA_setSpanningTree(mst, NUM_DRONES,1);
 
 				printf("\nSPANNING TREE\n");
@@ -308,13 +317,12 @@ static void *rxthread()//(void* args)
 					}
 					printf("\n");
 				}
-				*/
 				
 				printf("\n\n");
 				printData(data);
 
 			}else{
-				printf("\n\n\n NÃO É MATRIX!!!! \n\n\n");
+				//printf("\n\n\n NÃO É MATRIX!!!! \n\n\n");
 			}
 	}
 
@@ -362,20 +370,21 @@ static void* matrixthread(){    //(void* args)
 
 		pkt_matrix_size = sizeof(data);
 
-		sleepToStart();
+		//sleepToStart();
 		
 		for (int dst = 1; dst <= NUM_DRONES; dst++) { // MATRIX packet
 			if (dst != (myId)) {
-				error_t ret = TDMA_send(dst, pkt_matrix_size, pkt_matrix, 1);
+				error_t ret = TDMA_send(dst, pkt_matrix_size, pkt_matrix, 0);
 
 				if (E_SUCCESS != ret)
 					PRINTF_FL_WARN("something failed: %s\n", getError(ret));
 
-				microsleep(1e3); //10ms between sending to each node
+				microsleep(1e3); //1ms between sending to each node
 			}
 		}
 
 		//PRINTF_FL_WARN("Current Round Time is: %f\n", TDMA_getRoundTime());
+		microsleep(1e5);
 	}
 
 	return NULL;
@@ -397,11 +406,11 @@ int main(int argc, char *argv[])
 		timeout[x] = -1;
 	}
 
-	/* Uncomment for synchronization and go TDMA_slot.c function (int tdma_syncronizeSlot(int32_t *delta)) and comment the first line
-	mst = (int**) malloc(sizeof(int*) * NUM_DRONES);
+	// Uncomment for synchronization and go TDMA_slot.c function (int tdma_syncronizeSlot(int32_t *delta)) and comment the first line
+	mst = (uint8_t**) malloc(sizeof(uint8_t*) * NUM_DRONES);
 
 	for (x = 0; x < NUM_DRONES; x++) {
-		mst[x] = (int*) malloc(sizeof(int) * NUM_DRONES);
+		mst[x] = (uint8_t*) malloc(sizeof(uint8_t) * NUM_DRONES);
 	}
 	for (int i = 0; i < NUM_DRONES; i++) {
 		for (int x = 0; x < NUM_DRONES; x++) {
@@ -419,7 +428,6 @@ int main(int argc, char *argv[])
 		printf("\n");
 	}
 	
-	*/
 	if (drk_init(myId, myId, closeme) < 0)
 		exit(0);
 
